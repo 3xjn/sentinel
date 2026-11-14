@@ -1,5 +1,6 @@
 //! Offline asset screening, protected image scrubbing, and port verification.
 pub mod adapter;
+pub mod clip_prompts;
 pub mod image_scan;
 pub mod models;
 pub mod place_scan;

@@ -832,6 +832,7 @@ fn scan_neural(img: &RgbaImage, policy: &Policy, report: &mut AssetReport) -> Re
     // Validate all engines before beginning work; failures must never become clean scans.
     crate::models::ocr()?;
     let classifiers = crate::models::classifiers()?;
+    let clip_cfg = crate::models::clip_vision()?.map(|(c, _)| c);
     let light = composite(img, 255);
     scan_ocr(&light, (0, 0), 1., policy, report)?;
     if img.pixels().any(|p| p[3] < 255) {
@@ -868,6 +869,24 @@ fn scan_neural(img: &RgbaImage, policy: &Policy, report: &mut AssetReport) -> Re
                     format!("{} probability {score:.6}", classifier.spec.id),
                     bounds(r),
                 );
+            }
+        }
+        if let Some(cfg) = clip_cfg {
+            if r == full || (r.w >= cfg.min_crop_size && r.h >= cfg.min_crop_size) {
+                for (id, cat, desc, prob) in crate::models::clip_scores(&crop)? {
+                    #[cfg(test)]
+                    if prob >= 0.15 {
+                        eprintln!("CLIP {id} {:?}: {prob}", bounds(r));
+                    }
+                    report.record(
+                        policy,
+                        cat,
+                        id,
+                        prob,
+                        format!("CLIP {desc} ({prob:.6})"),
+                        bounds(r),
+                    );
+                }
             }
         }
         // Upscale small atlas islands so text remains legible to DBNet.
@@ -1010,17 +1029,46 @@ mod neural_tests {
         }
     }
     #[test]
-    fn burgeria_atlas_is_clean() {
-        let Some(path) = std::env::var_os("SENTINEL_TEST_ATLAS").map(std::path::PathBuf::from)
-        else {
-            return;
-        };
-        if !path.exists() {
-            eprintln!("Local atlas fixture unavailable: {}", path.display());
-            return;
+    fn ui_atlas_is_clean() {
+        use font8x8::UnicodeFonts;
+        // Synthesize a 1024x1024 transparent sprite atlas with UI buttons and labels
+        // so the test is self-contained and exercises multi-island OCR + NSFW gating.
+        let mut img = RgbaImage::from_pixel(1024, 1024, Rgba([0, 0, 0, 0]));
+        let islands = [
+            (2u32, 2u32, 156u32, 190u32, [46u8, 125, 50, 255], "SHOP"),
+            (162, 2, 116, 71, [21, 101, 192, 255], "UPGRADES"),
+            (282, 2, 87, 87, [239, 108, 0, 255], "PLAY"),
+            (373, 2, 74, 66, [106, 27, 154, 255], "SAVE"),
+            (527, 2, 93, 89, [0, 131, 143, 255], "MENU"),
+        ];
+        for (ix, iy, iw, ih, bg, label) in islands {
+            for y in iy..(iy + ih) {
+                for x in ix..(ix + iw) {
+                    img.put_pixel(x, y, Rgba(bg));
+                }
+            }
+            for (ci, ch) in label.chars().enumerate() {
+                if let Some(glyph) = font8x8::BASIC_FONTS.get(ch) {
+                    for (row, bits) in glyph.iter().enumerate() {
+                        for col in 0..8 {
+                            if (bits >> col) & 1 == 1 {
+                                let px = ix + 8 + (ci as u32) * 10 + col as u32;
+                                let py = iy + 16 + row as u32;
+                                if px < ix + iw && py < iy + ih {
+                                    img.put_pixel(px, py, Rgba([255, 255, 255, 255]));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-        let report = crate::place_scan::scan_file(&path, &Policy::default()).unwrap();
-        eprintln!("Atlas report: {report:#?}");
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        let mut report = AssetReport::new("ui_atlas.png".into(), &bytes, "image");
+        scan_image(&bytes, &Policy::default(), &mut report).unwrap();
         assert!(!report.blocked, "{report:#?}");
     }
 }

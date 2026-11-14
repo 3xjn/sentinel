@@ -10,7 +10,7 @@ sentinel flags text, scripts, images, and readable place-file content for review
 
 ## Setup
 
-Install a current stable Rust toolchain, then install directly from GitHub or build from source:
+Download a prebuilt binary from [GitHub Releases](https://github.com/3xjn/sentinel/releases) (`sentinel-windows-x86_64.exe`, `sentinel-linux-x86_64`, `sentinel-macos-aarch64`, `sentinel-macos-x86_64`), or install from source with a current stable Rust toolchain:
 
 ```bash
 cargo install --git https://github.com/3xjn/sentinel
@@ -22,7 +22,7 @@ Or build locally:
 cargo build --release --bin sentinel
 ```
 
-The executable is `sentinel` (`target/release/sentinel` or `target\release\sentinel.exe` on Windows). Image scanning uses neural OCR (`ocrs` + `rten`), QR payload decoding (`rqrr`), OpenNSFW ONNX inference, and Marqo NSFW-384 ViT inference in RTen. All inference runs locally in Rust; there are no C/C++ inference libraries or cloud moderation calls.
+The executable is `sentinel` (`target/release/sentinel` or `target\release\sentinel.exe` on Windows). Image scanning uses neural OCR (`ocrs` + `rten`), QR payload decoding (`rqrr`), OpenNSFW ONNX inference, Marqo NSFW-384 ViT inference, and CLIP ViT-B/32 zero-shot screening in RTen. All inference runs locally in Rust; there are no C/C++ inference libraries or cloud moderation calls.
 
 Install these models before scanning images:
 
@@ -32,6 +32,7 @@ Install these models before scanning images:
 | `text-recognition.onnx` | [ocrs CRNN](https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.onnx) |
 | `open-nsfw.onnx` | [OpenNSFW](https://huggingface.co/bluefoxcreation/open-nsfw/resolve/main/open-nsfw.onnx) |
 | `marqo-nsfw-384.onnx` | [Marqo NSFW-384](https://huggingface.co/KanariKanaru/nsfw-image-detection-384-onnx/resolve/main/model.onnx) |
+| `clip-vision.onnx` | [CLIP ViT-B/32 Vision](https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model.onnx) |
 
 Model discovery uses `SENTINEL_MODEL_DIR` first, then `%LOCALAPPDATA%\sentinel\models` on Windows (`$HOME/.local/share/sentinel/models` elsewhere), then `./models` if the user model directory does not exist. An explicit environment override is authoritative. Models initialize lazily and are cached once per process, including across library scans. Missing, incompatible, or corrupt models fail the scan with setup guidance. Models are never downloaded automatically during `scan`.
 
@@ -48,7 +49,9 @@ sentinel models list
 sentinel models init
 ```
 
-You can point `SENTINEL_MODELS_CONFIG` at a custom `models.toml` (or edit `<model_dir>/models.toml`) to enable/disable models or add extra `[[classifiers]]` entries without recompiling.
+You can point `SENTINEL_MODELS_CONFIG` at a custom `models.toml` (or edit `<model_dir>/models.toml`) to enable/disable models, tune `[clip]` (`temperature`, `safe_margin`, `disabled_prompts`), or add extra `[[classifiers]]` entries without recompiling.
+
+CLIP zero-shot screening (`clip-vision.onnx`) covers Roblox Community Standards image categories out of the box: drugs & paraphernalia, alcohol, tobacco/vaping, gambling, graphic gore/corpses, realistic firearms/weapons, self-harm, hate symbols, obscene gestures, nudity/suggestive content, and offsite/QR indicators.
 
 To use a custom model directory:
 

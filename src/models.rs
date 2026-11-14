@@ -94,10 +94,55 @@ fn default_min_crop() -> u32 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClipConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub file: String,
+    pub url: Option<String>,
+    #[serde(default = "default_clip_min_crop")]
+    pub min_crop_size: u32,
+    #[serde(default = "default_clip_temperature")]
+    pub temperature: f32,
+    #[serde(default = "default_clip_margin")]
+    pub safe_margin: f32,
+    #[serde(default)]
+    pub disabled_prompts: Vec<String>,
+}
+
+impl Default for ClipConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file: "clip-vision.onnx".into(),
+            url: Some(
+                "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model.onnx"
+                    .into(),
+            ),
+            min_crop_size: default_clip_min_crop(),
+            temperature: default_clip_temperature(),
+            safe_margin: default_clip_margin(),
+            disabled_prompts: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelsConfig {
     pub ocr: OcrConfig,
     #[serde(default)]
     pub classifiers: Vec<ClassifierSpec>,
+    #[serde(default)]
+    pub clip: ClipConfig,
+}
+
+fn default_clip_min_crop() -> u32 {
+    192
+}
+fn default_clip_temperature() -> f32 {
+    80.0
+}
+fn default_clip_margin() -> f32 {
+    0.045
 }
 
 impl Default for ModelsConfig {
@@ -157,6 +202,7 @@ impl Default for ModelsConfig {
                     min_crop_size: 192,
                 },
             ],
+            clip: ClipConfig::default(),
         }
     }
 }
@@ -285,6 +331,19 @@ pub fn list_models() -> Result<Vec<ModelStatus>> {
             url: c.url,
         });
     }
+    let clip_p = dir.join(&cfg.clip.file);
+    let clip_meta = fs::metadata(&clip_p).ok();
+    out.push(ModelStatus {
+        id: "clip_vision".into(),
+        kind: "clip".into(),
+        file: cfg.clip.file,
+        path: clip_p.display().to_string(),
+        enabled: cfg.clip.enabled,
+        installed: clip_meta.is_some(),
+        bytes: clip_meta.map(|m| m.len()),
+        category: None,
+        url: cfg.clip.url,
+    });
     Ok(out)
 }
 
@@ -326,6 +385,9 @@ pub fn install_models(force: bool) -> Result<Vec<(String, PathBuf, u64)>> {
     for c in cfg.classifiers.into_iter().filter(|c| c.enabled) {
         targets.push((c.id, c.file, c.url));
     }
+    if cfg.clip.enabled {
+        targets.push(("clip_vision".into(), cfg.clip.file, cfg.clip.url));
+    }
 
     let mut installed = Vec::new();
     for (id, file, url) in targets {
@@ -364,6 +426,7 @@ fn cached<T>(
 
 static OCR: OnceLock<std::result::Result<OcrEngine, String>> = OnceLock::new();
 static CLASSIFIERS: OnceLock<std::result::Result<Vec<LoadedClassifier>, String>> = OnceLock::new();
+static CLIP_VISION: OnceLock<std::result::Result<Option<(ClipConfig, Model)>, String>> = OnceLock::new();
 
 pub fn ocr() -> Result<&'static OcrEngine> {
     cached(&OCR, || {
@@ -521,6 +584,77 @@ pub fn marqo_nsfw_score(img: &image::RgbImage) -> Result<f32> {
         .find(|c| c.spec.id == "marqo_nsfw")
         .context("Classifier 'marqo_nsfw' is not enabled")?;
     run_classifier(c, img)
+}
+
+pub fn clip_vision() -> Result<Option<&'static (ClipConfig, Model)>> {
+    cached(&CLIP_VISION, || {
+        let cfg = load_config()?;
+        if !cfg.clip.enabled {
+            return Ok(None);
+        }
+        let path = model_dir().join(&cfg.clip.file);
+        let model = Model::load_file(&path)
+            .with_context(|| format!("Loading CLIP vision model ({})", path.display()))?;
+        Ok(Some((cfg.clip, model)))
+    })
+    .map(Option::as_ref)
+}
+
+pub fn clip_scores(img: &image::RgbImage) -> Result<Vec<(&'static str, Category, &'static str, f32)>> {
+    let Some((cfg, model)) = clip_vision()? else {
+        return Ok(Vec::new());
+    };
+    ensure!(
+        img.width() > 0 && img.height() > 0,
+        "CLIP vision needs a nonempty image"
+    );
+    let resized = image::imageops::resize(img, 224, 224, image::imageops::FilterType::CatmullRom);
+    let mean = [0.48145466f32, 0.4578275, 0.40821073];
+    let std = [0.26862954f32, 0.26130258, 0.27577711];
+    let mut tensor = NdTensor::zeros([1, 3, 224, 224]);
+    for y in 0..224 {
+        for x in 0..224 {
+            let p = resized.get_pixel(x, y);
+            for c in 0..3 {
+                tensor[[0, c, y as usize, x as usize]] =
+                    (f32::from(p[c]) / 255.0 - mean[c]) / std[c];
+            }
+        }
+    }
+    let output = model
+        .run_one(tensor.view().into(), None)
+        .context("CLIP vision inference")?;
+    let mut iv: Vec<f32> = output
+        .as_tensor_view::<f32>()
+        .context("Expected float CLIP image embedding")?
+        .iter()
+        .copied()
+        .collect();
+    ensure!(iv.len() == 512, "Expected 512-d CLIP embedding, got {}", iv.len());
+    let norm = iv.iter().map(|x| x * x).sum::<f32>().sqrt();
+    ensure!(norm > 0.0 && norm.is_finite(), "Invalid CLIP embedding norm");
+    for x in &mut iv {
+        *x /= norm;
+    }
+
+    let dot = |a: &[f32], b: &[f32; 512]| -> f32 { a.iter().zip(b.iter()).map(|(x, y)| x * y).sum() };
+    let max_safe = crate::clip_prompts::CLIP_PROMPTS
+        .iter()
+        .filter(|p| p.category.is_none())
+        .map(|p| dot(&iv, &p.embed))
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    let mut out = Vec::new();
+    for p in crate::clip_prompts::CLIP_PROMPTS {
+        let Some(cat) = p.category else { continue };
+        if cfg.disabled_prompts.iter().any(|d| d == p.id) {
+            continue;
+        }
+        let sim = dot(&iv, &p.embed);
+        let prob = 1.0 / (1.0 + ((max_safe + cfg.safe_margin - sim) * cfg.temperature).exp());
+        out.push((p.id, cat, p.description, prob));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
