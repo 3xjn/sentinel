@@ -1,0 +1,27 @@
+[package]
+name = "sentinel"
+version = "0.1.0"
+edition = "2021"
+description = "Local neural asset screening and port verification"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+toml = "0.8"
+ureq = "2"
+walkdir = "2"
+ocrs = "0.14.0"
+rten = { version = "0.28.0", features = ["onnx_format"] }
+rten-tensor = "0.28.0"
+rten-imageproc = "0.28.0"
+rqrr = "0.11.0"
+rten-onnx = "0.28.0"
+
+[dev-dependencies]
+qrcode = { version = "0.14", default-features = false }
+font8x8 = "0.3"
