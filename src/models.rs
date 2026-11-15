@@ -142,7 +142,7 @@ fn default_clip_temperature() -> f32 {
     80.0
 }
 fn default_clip_margin() -> f32 {
-    0.045
+    0.050
 }
 
 impl Default for ModelsConfig {
