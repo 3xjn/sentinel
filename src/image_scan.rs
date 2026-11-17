@@ -846,12 +846,50 @@ fn scan_neural(img: &RgbaImage, policy: &Policy, report: &mut AssetReport) -> Re
     };
     let mut candidates = vec![full];
     if img.width() > 256 || img.height() > 256 {
-        candidates.extend(
-            component_regions(img, |p| p[3] > 0)
-                .into_iter()
-                .filter(|(r, _)| r.w >= 48 && r.h >= 48 && *r != full)
-                .map(|(r, _)| r),
-        );
+        let islands: Vec<Rect> = component_regions(img, |p| p[3] > 0)
+            .into_iter()
+            .filter(|(r, _)| r.w >= 48 && r.h >= 48 && *r != full)
+            .map(|(r, _)| r)
+            .collect();
+        if islands.is_empty() {
+            // Opaque image with no alpha islands: add a 3x3 coarse grid (45%, >= 192px)
+            // plus a 50%-overlap fine grid (~28%, >= 160px) so small embedded graphics
+            // never get split across tile seams.
+            let cw = ((img.width() as f32 * 0.45).round() as u32).max(192).min(img.width());
+            let ch = ((img.height() as f32 * 0.45).round() as u32).max(192).min(img.height());
+            let sx = img.width().saturating_sub(cw);
+            let sy = img.height().saturating_sub(ch);
+            for gy in 0..3u32 {
+                for gx in 0..3u32 {
+                    let r = Rect { x: (sx * gx) / 2, y: (sy * gy) / 2, w: cw, h: ch };
+                    if r != full && !candidates.contains(&r) {
+                        candidates.push(r);
+                    }
+                }
+            }
+            let fw = ((img.width() as f32 * 0.28).round() as u32).max(160).min(img.width());
+            let fh = ((img.height() as f32 * 0.28).round() as u32).max(160).min(img.height());
+            let step_x = (fw / 2).max(1);
+            let step_y = (fh / 2).max(1);
+            let mut y = 0u32;
+            loop {
+                let ry = y.min(img.height().saturating_sub(fh));
+                let mut x = 0u32;
+                loop {
+                    let rx = x.min(img.width().saturating_sub(fw));
+                    let r = Rect { x: rx, y: ry, w: fw, h: fh };
+                    if r != full && !candidates.contains(&r) {
+                        candidates.push(r);
+                    }
+                    if rx + fw >= img.width() { break; }
+                    x += step_x;
+                }
+                if ry + fh >= img.height() { break; }
+                y += step_y;
+            }
+        } else {
+            candidates.extend(islands);
+        }
     }
     for r in candidates {
         let crop = image::imageops::crop_imm(&light, r.x, r.y, r.w, r.h).to_image();
