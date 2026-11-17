@@ -257,7 +257,7 @@ pub fn scan_image_with_options(
     let img = image::load_from_memory(bytes)?.to_rgba8();
     decode_qr(&img, policy, report);
     if !options.no_models {
-        scan_neural(&img, policy, report).with_context(crate::models::help)?;
+        scan_neural(&img, policy, report, options.fast).with_context(crate::models::help)?;
     }
     for text in png_text(bytes)? {
         text_scan::scan_text(&text, false, policy, report);
@@ -828,7 +828,39 @@ fn scan_ocr(
     }
     Ok(())
 }
-fn scan_neural(img: &RgbaImage, policy: &Policy, report: &mut AssetReport) -> Result<()> {
+fn tile_has_detail(crop: &image::RgbImage) -> bool {
+    let step_x = (crop.width() / 16).max(1);
+    let step_y = (crop.height() / 16).max(1);
+    let mut count = 0u64;
+    let mut sum = [0f64; 3];
+    let mut sum_sq = [0f64; 3];
+    for y in (0..crop.height()).step_by(step_y as usize) {
+        for x in (0..crop.width()).step_by(step_x as usize) {
+            let p = crop.get_pixel(x, y);
+            for c in 0..3 {
+                let v = f64::from(p[c]);
+                sum[c] += v;
+                sum_sq[c] += v * v;
+            }
+            count += 1;
+        }
+    }
+    if count < 2 {
+        return true;
+    }
+    let n = count as f64;
+    let max_var = (0..3)
+        .map(|c| (sum_sq[c] / n) - (sum[c] / n).powi(2))
+        .fold(0.0f64, f64::max);
+    max_var >= 64.0
+}
+
+fn scan_neural(
+    img: &RgbaImage,
+    policy: &Policy,
+    report: &mut AssetReport,
+    fast: bool,
+) -> Result<()> {
     // Validate all engines before beginning work; failures must never become clean scans.
     crate::models::ocr()?;
     let classifiers = crate::models::classifiers()?;
@@ -845,7 +877,7 @@ fn scan_neural(img: &RgbaImage, policy: &Policy, report: &mut AssetReport) -> Re
         h: img.height(),
     };
     let mut candidates = vec![full];
-    if img.width() > 256 || img.height() > 256 {
+    if !fast && (img.width() > 256 || img.height() > 256) {
         let islands: Vec<Rect> = component_regions(img, |p| p[3] > 0)
             .into_iter()
             .filter(|(r, _)| r.w >= 48 && r.h >= 48 && *r != full)
@@ -891,44 +923,59 @@ fn scan_neural(img: &RgbaImage, policy: &Policy, report: &mut AssetReport) -> Re
             candidates.extend(islands);
         }
     }
-    for r in candidates {
-        let crop = image::imageops::crop_imm(&light, r.x, r.y, r.w, r.h).to_image();
-        for classifier in classifiers {
-            let min_crop = classifier.spec.min_crop_size;
-            if r == full || (r.w >= min_crop && r.h >= min_crop) {
-                let score = crate::models::run_classifier(classifier, &crop)?;
-                #[cfg(test)]
-                eprintln!("{} {:?}: {score}", classifier.spec.id, bounds(r));
-                report.record(
-                    policy,
-                    classifier.spec.category,
-                    &classifier.spec.id,
-                    score,
-                    format!("{} probability {score:.6}", classifier.spec.id),
-                    bounds(r),
-                );
+
+    use rayon::prelude::*;
+    type Finding = (Category, String, f32, String, Option<[u32; 4]>);
+    let tile_results: Vec<Result<(Vec<Finding>, Option<image::RgbImage>)>> = candidates
+        .par_iter()
+        .map(|&r| {
+            let crop = image::imageops::crop_imm(&light, r.x, r.y, r.w, r.h).to_image();
+            if r != full && !tile_has_detail(&crop) {
+                return Ok((Vec::new(), None));
             }
-        }
-        if let Some(cfg) = clip_cfg {
-            if r == full || (r.w >= cfg.min_crop_size && r.h >= cfg.min_crop_size) {
-                for (id, cat, desc, prob) in crate::models::clip_scores(&crop)? {
-                    #[cfg(test)]
-                    if prob >= 0.15 {
-                        eprintln!("CLIP {id} {:?}: {prob}", bounds(r));
-                    }
-                    report.record(
-                        policy,
-                        cat,
-                        id,
-                        prob,
-                        format!("CLIP {desc} ({prob:.6})"),
+            let mut findings = Vec::new();
+            for classifier in classifiers {
+                let min_crop = classifier.spec.min_crop_size;
+                if r == full || (r.w >= min_crop && r.h >= min_crop) {
+                    let score = crate::models::run_classifier(classifier, &crop)?;
+                    findings.push((
+                        classifier.spec.category,
+                        classifier.spec.id.clone(),
+                        score,
+                        format!("{} probability {score:.6}", classifier.spec.id),
                         bounds(r),
-                    );
+                    ));
                 }
             }
+            if let Some(cfg) = clip_cfg {
+                if r == full || (r.w >= cfg.min_crop_size && r.h >= cfg.min_crop_size) {
+                    for (id, cat, desc, prob) in crate::models::clip_scores(&crop)? {
+                        findings.push((
+                            cat,
+                            id.to_string(),
+                            prob,
+                            format!("CLIP {desc} ({prob:.6})"),
+                            bounds(r),
+                        ));
+                    }
+                }
+            }
+            let ocr_crop = if r != full && (r.w < 400 || r.h < 120) {
+                Some(crop)
+            } else {
+                None
+            };
+            Ok((findings, ocr_crop))
+        })
+        .collect();
+
+    for (r, res) in candidates.into_iter().zip(tile_results) {
+        let (findings, ocr_crop) = res?;
+        for (cat, detector, score, evidence, rect) in findings {
+            report.record(policy, cat, &detector, score, evidence, rect);
         }
         // Upscale small atlas islands so text remains legible to DBNet.
-        if r != full && (r.w < 400 || r.h < 120) {
+        if let Some(crop) = ocr_crop {
             let enlarged = image::imageops::resize(
                 &crop,
                 r.w * 2,

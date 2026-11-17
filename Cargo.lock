@@ -963,6 +963,7 @@ dependencies = [
  "image",
  "ocrs",
  "qrcode",
+ "rayon",
  "regex",
  "rqrr",
  "rten",

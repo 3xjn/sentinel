@@ -7,6 +7,7 @@ use crate::{
     text_scan,
 };
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use std::{
     collections::BTreeSet,
     fs,
@@ -108,20 +109,27 @@ pub fn scan_paths(roots: &[PathBuf], policy: &Policy, options: ScanOptions) -> R
         } else {
             for entry in WalkDir::new(path)
                 .into_iter()
-                .filter_entry(|e| ![".git", "target"].iter().any(|s| e.file_name() == *s))
+                .filter_entry(|e| {
+                    ![".git", "target", "node_modules", "$Recycle.Bin", "System Volume Information"]
+                        .iter()
+                        .any(|s| e.file_name().eq_ignore_ascii_case(s))
+                })
+                .filter_map(std::result::Result::ok)
             {
-                let entry = entry?;
                 if entry.file_type().is_file() && supported(entry.path()) {
-                    paths.insert(fs::canonicalize(entry.path())?);
+                    if let Ok(canon) = fs::canonicalize(entry.path()) {
+                        paths.insert(canon);
+                    }
                 }
             }
         }
     }
+    let ordered: Vec<PathBuf> = paths.into_iter().collect();
     Ok(ScanSummary::new(
-        paths
-            .iter()
+        ordered
+            .par_iter()
             .map(|p| scan_file_with_options(p, policy, options))
-            .collect::<Result<_>>()?,
+            .collect::<Result<Vec<_>>>()?,
     ))
 }
 #[cfg(test)]

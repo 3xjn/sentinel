@@ -27,6 +27,8 @@ enum Command {
         #[arg(long)]
         no_models: bool,
         #[arg(long)]
+        fast: bool,
+        #[arg(long)]
         json: bool,
         #[arg(long, value_enum, default_value = "high-recall")]
         profile: Profile,
@@ -102,6 +104,7 @@ fn parse_rect(text: &str) -> Result<Rect, String> {
 fn scan(
     paths: Vec<PathBuf>,
     no_models: bool,
+    fast: bool,
     json: bool,
     profile: Profile,
     thresholds: Vec<String>,
@@ -116,8 +119,11 @@ fn scan(
             score.parse()?,
         )?;
     }
-    let summary =
-        place_scan::scan_paths(&paths, &policy, sentinel::models::ScanOptions { no_models })?;
+    let summary = place_scan::scan_paths(
+        &paths,
+        &policy,
+        sentinel::models::ScanOptions { no_models, fast },
+    )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
@@ -177,10 +183,11 @@ fn run() -> Result<bool> {
         Command::Scan {
             paths,
             no_models,
+            fast,
             json,
             profile,
             threshold,
-        } => scan(paths, no_models, json, profile, threshold),
+        } => scan(paths, no_models, fast, json, profile, threshold),
         Command::Scrub {
             input,
             output,

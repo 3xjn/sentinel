@@ -16,6 +16,7 @@ use std::{
 /// Model-backed scanning is enabled unless explicitly disabled.
 pub struct ScanOptions {
     pub no_models: bool,
+    pub fast: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
