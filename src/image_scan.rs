@@ -255,22 +255,28 @@ pub fn scan_image_with_options(
     options: crate::models::ScanOptions,
 ) -> Result<()> {
     let img = image::load_from_memory(bytes)?.to_rgba8();
-    decode_qr(&img, policy, report);
+    if options.allows(Category::OffsiteLink) {
+        decode_qr(&img, policy, report);
+    }
     if !options.no_models {
-        scan_neural(&img, policy, report, options.fast).with_context(crate::models::help)?;
+        scan_neural(&img, policy, report, options).with_context(crate::models::help)?;
     }
-    for text in png_text(bytes)? {
-        text_scan::scan_text(&text, false, policy, report);
+    if !options.nudity_only() {
+        for text in png_text(bytes)? {
+            text_scan::scan_text(&text, false, policy, report);
+        }
     }
-    for r in qr_regions(&img) {
-        report.record(
-            policy,
-            Category::OffsiteLink,
-            "qr_finder",
-            0.95,
-            "Orthogonal 1:1:3:1:1 finder patterns",
-            bounds(r),
-        );
+    if options.allows(Category::OffsiteLink) {
+        for r in qr_regions(&img) {
+            report.record(
+                policy,
+                Category::OffsiteLink,
+                "qr_finder",
+                0.95,
+                "Orthogonal 1:1:3:1:1 finder patterns",
+                bounds(r),
+            );
+        }
     }
     for (predicate, category, detector, min_area, min_ratio) in [
         (
@@ -282,6 +288,9 @@ pub fn scan_image_with_options(
         ),
         (skin, Category::SexualNudity, "visual_nsfw", 12000, 0.72),
     ] {
+        if !options.allows(category) {
+            continue;
+        }
         for (r, area) in component_regions(&img, predicate) {
             let density = area as f32 / (r.w as f32 * r.h as f32);
             let compact_blood = detector == "visual_gore" && area >= 1024 && density >= 0.90;
@@ -302,19 +311,21 @@ pub fn scan_image_with_options(
             }
         }
     }
-    let mut badges: Vec<Rect> = Vec::new();
-    for r in regions(&img) {
-        let score = visual_badge(&img, r);
-        if score > 0. && !badges.iter().any(|b| b.intersection(&r).is_some()) {
-            badges.push(r);
-            report.record(
-                policy,
-                Category::OffsiteLink,
-                "visual_badge",
-                score,
-                "Badge geometry, background color and white inner text/glyph",
-                bounds(r),
-            );
+    if options.allows(Category::OffsiteLink) {
+        let mut badges: Vec<Rect> = Vec::new();
+        for r in regions(&img) {
+            let score = visual_badge(&img, r);
+            if score > 0. && !badges.iter().any(|b| b.intersection(&r).is_some()) {
+                badges.push(r);
+                report.record(
+                    policy,
+                    Category::OffsiteLink,
+                    "visual_badge",
+                    score,
+                    "Badge geometry, background color and white inner text/glyph",
+                    bounds(r),
+                );
+            }
         }
     }
     Ok(())
@@ -859,16 +870,25 @@ fn scan_neural(
     img: &RgbaImage,
     policy: &Policy,
     report: &mut AssetReport,
-    fast: bool,
+    options: crate::models::ScanOptions,
 ) -> Result<()> {
     // Validate all engines before beginning work; failures must never become clean scans.
-    crate::models::ocr()?;
+    let run_ocr = !options.nudity_only();
+    if run_ocr {
+        crate::models::ocr()?;
+    }
     let classifiers = crate::models::classifiers()?;
-    let clip_cfg = crate::models::clip_vision()?.map(|(c, _)| c);
+    let clip_cfg = if options.nudity_only() {
+        None
+    } else {
+        crate::models::clip_vision()?.map(|(c, _)| c)
+    };
     let light = composite(img, 255);
-    scan_ocr(&light, (0, 0), 1., policy, report)?;
-    if img.pixels().any(|p| p[3] < 255) {
-        scan_ocr(&composite(img, 0), (0, 0), 1., policy, report)?;
+    if run_ocr {
+        scan_ocr(&light, (0, 0), 1., policy, report)?;
+        if img.pixels().any(|p| p[3] < 255) {
+            scan_ocr(&composite(img, 0), (0, 0), 1., policy, report)?;
+        }
     }
     let full = Rect {
         x: 0,
@@ -877,7 +897,7 @@ fn scan_neural(
         h: img.height(),
     };
     let mut candidates = vec![full];
-    if !fast && (img.width() > 256 || img.height() > 256) {
+    if !options.fast && (img.width() > 256 || img.height() > 256) {
         let islands: Vec<Rect> = component_regions(img, |p| p[3] > 0)
             .into_iter()
             .filter(|(r, _)| r.w >= 48 && r.h >= 48 && *r != full)
@@ -935,6 +955,9 @@ fn scan_neural(
             }
             let mut findings = Vec::new();
             for classifier in classifiers {
+                if !options.allows(classifier.spec.category) {
+                    continue;
+                }
                 let min_crop = classifier.spec.min_crop_size;
                 if r == full || (r.w >= min_crop && r.h >= min_crop) {
                     let score = crate::models::run_classifier(classifier, &crop)?;
@@ -950,17 +973,19 @@ fn scan_neural(
             if let Some(cfg) = clip_cfg {
                 if r == full || (r.w >= cfg.min_crop_size && r.h >= cfg.min_crop_size) {
                     for (id, cat, desc, prob) in crate::models::clip_scores(&crop)? {
-                        findings.push((
-                            cat,
-                            id.to_string(),
-                            prob,
-                            format!("CLIP {desc} ({prob:.6})"),
-                            bounds(r),
-                        ));
+                        if options.allows(cat) {
+                            findings.push((
+                                cat,
+                                id.to_string(),
+                                prob,
+                                format!("CLIP {desc} ({prob:.6})"),
+                                bounds(r),
+                            ));
+                        }
                     }
                 }
             }
-            let ocr_crop = if r != full && (r.w < 400 || r.h < 120) {
+            let ocr_crop = if run_ocr && r != full && (r.w < 400 || r.h < 120) {
                 Some(crop)
             } else {
                 None

@@ -129,7 +129,14 @@ where
                 })
                 .filter_map(std::result::Result::ok)
             {
-                if entry.file_type().is_file() && supported(entry.path()) {
+                if entry.file_type().is_file()
+                    && supported(entry.path())
+                    && (!options.nudity_only()
+                        || matches!(
+                            extension(entry.path()).as_str(),
+                            "png" | "jpg" | "jpeg" | "webp"
+                        ))
+                {
                     if let Ok(canon) = fs::canonicalize(entry.path()) {
                         paths.insert(canon);
                     }

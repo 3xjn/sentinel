@@ -129,13 +129,14 @@ Model discovery checks `SENTINEL_MODEL_DIR`, then `%LOCALAPPDATA%\sentinel\model
 ```bash
 sentinel scan ./assets ./badge.png --json
 sentinel scan ./assets --fast --only-flagged --jsonl
+sentinel scan ./assets --category sexual_nudity --fast --only-flagged
 sentinel scan ./assets --no-models --json
 sentinel scan ./game --profile balanced --threshold offsite_link=0.25
 ```
 
 - **Inputs:** Recursively discovers PNG, JPEG, WebP, Lua/Luau, JSON, TXT, and Roblox place/model files across CPU cores (skipping `.git`, `target`, `node_modules`, and unreadable system paths).
 - **Profiles:** `high-recall` (default) favors human review; `balanced` raises all thresholds by `0.20`.
-- **Categories:** `offsite_link`, `gore_violence`, `sexual_nudity`, `profanity_slurs`, `regulated_goods`, `unfiltered_text_input`.
+- **Categories:** `offsite_link`, `gore_violence`, `sexual_nudity`, `profanity_slurs`, `regulated_goods`, `unfiltered_text_input`. Pass `--category <name>` (repeatable) to restrict scanning and skip unrelated detectors (e.g., `--category sexual_nudity` skips OCR, QR, and CLIP).
 - **Fast mode:** `--fast` skips multi-scale opaque-image tiling and evaluates full frames only (~0.15s/image warm) for large directory or drive-wide sweeps.
 - **Flagged-only & live streaming:** `--only-flagged` omits clean files from `--json` / `--jsonl` output while keeping totals; `--jsonl` streams each result as one JSON line as soon as it finishes, and multi-file scans print live progress (`done/total`) to `stderr`.
 - **Lightweight mode:** `--no-models` skips OCR, ONNX classifiers, and CLIP while still running QR decoding, PNG metadata, text rules, and visual heuristics.

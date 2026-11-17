@@ -47,6 +47,8 @@ enum Command {
         profile: Profile,
         #[arg(long, value_name = "CATEGORY=SCORE")]
         threshold: Vec<String>,
+        #[arg(long, value_name = "CATEGORY")]
+        category: Vec<String>,
     },
     /// Scrub rectangles while preserving every pixel in kept rectangles.
     Scrub {
@@ -123,6 +125,7 @@ fn scan(
     jsonl: bool,
     profile: Profile,
     thresholds: Vec<String>,
+    categories: Vec<String>,
 ) -> Result<bool> {
     let mut policy = Policy::new(profile);
     for entry in thresholds {
@@ -134,12 +137,21 @@ fn scan(
             score.parse()?,
         )?;
     }
+    let mut category_mask = 0u8;
+    for cat_str in categories {
+        let cat: sentinel::policy::Category = cat_str.parse().map_err(anyhow::Error::msg)?;
+        category_mask |= sentinel::models::ScanOptions::mask_for(cat);
+    }
     let flagged_count = AtomicUsize::new(0);
     let out_lock = Mutex::new(());
     let mut summary = place_scan::scan_paths_with_progress(
         &paths,
         &policy,
-        sentinel::models::ScanOptions { no_models, fast },
+        sentinel::models::ScanOptions {
+            no_models,
+            fast,
+            category_mask,
+        },
         |done, total, asset| {
             let hit = asset.blocked || asset.flag_count > 0;
             let flagged = if hit {
@@ -233,6 +245,7 @@ fn run() -> Result<bool> {
             jsonl,
             profile,
             threshold,
+            category,
         } => scan(
             paths,
             no_models,
@@ -242,6 +255,7 @@ fn run() -> Result<bool> {
             jsonl,
             profile,
             threshold,
+            category,
         ),
         Command::Scrub {
             input,

@@ -17,6 +17,29 @@ use std::{
 pub struct ScanOptions {
     pub no_models: bool,
     pub fast: bool,
+    /// Optional bitmask of enabled `Category` values (`0` = all categories enabled).
+    pub category_mask: u8,
+}
+
+impl ScanOptions {
+    pub fn mask_for(cat: Category) -> u8 {
+        1u8 << match cat {
+            Category::OffsiteLink => 0,
+            Category::GoreViolence => 1,
+            Category::SexualNudity => 2,
+            Category::ProfanitySlurs => 3,
+            Category::RegulatedGoods => 4,
+            Category::UnfilteredTextInput => 5,
+        }
+    }
+
+    pub fn allows(&self, cat: Category) -> bool {
+        self.category_mask == 0 || (self.category_mask & Self::mask_for(cat)) != 0
+    }
+
+    pub fn nudity_only(&self) -> bool {
+        self.category_mask == Self::mask_for(Category::SexualNudity)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
