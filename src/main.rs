@@ -6,7 +6,16 @@ use sentinel::{
     policy::{Policy, Profile},
     scrub::{self, Rect, ScrubMode},
 };
-use std::{fs, path::PathBuf, process::ExitCode};
+use std::{
+    fs,
+    io::Write,
+    path::PathBuf,
+    process::ExitCode,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
+};
 
 #[derive(Parser)]
 #[command(
@@ -32,6 +41,8 @@ enum Command {
         only_flagged: bool,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        jsonl: bool,
         #[arg(long, value_enum, default_value = "high-recall")]
         profile: Profile,
         #[arg(long, value_name = "CATEGORY=SCORE")]
@@ -109,6 +120,7 @@ fn scan(
     fast: bool,
     only_flagged: bool,
     json: bool,
+    jsonl: bool,
     profile: Profile,
     thresholds: Vec<String>,
 ) -> Result<bool> {
@@ -122,19 +134,28 @@ fn scan(
             score.parse()?,
         )?;
     }
-    let mut summary = place_scan::scan_paths(
+    let flagged_count = AtomicUsize::new(0);
+    let out_lock = Mutex::new(());
+    let mut summary = place_scan::scan_paths_with_progress(
         &paths,
         &policy,
         sentinel::models::ScanOptions { no_models, fast },
-    )?;
-    if only_flagged {
-        summary.assets.retain(|a| a.blocked || a.flag_count > 0);
-    }
-    if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-    } else {
-        for asset in &summary.assets {
-            if asset.blocked {
+        |done, total, asset| {
+            let hit = asset.blocked || asset.flag_count > 0;
+            let flagged = if hit {
+                flagged_count.fetch_add(1, Ordering::Relaxed) + 1
+            } else {
+                flagged_count.load(Ordering::Relaxed)
+            };
+            let _guard = out_lock.lock().unwrap();
+            if jsonl {
+                if !only_flagged || hit {
+                    if let Ok(line) = serde_json::to_string(asset) {
+                        println!("{line}");
+                    }
+                }
+            } else if !json && asset.blocked {
+                eprint!("\r{:60}\r", "");
                 println!("{}: {} flags", asset.path, asset.flag_count);
                 for f in &asset.flags {
                     println!(
@@ -143,7 +164,24 @@ fn scan(
                     );
                 }
             }
-        }
+            if total > 1 && (hit || done == total || done % 10 == 0) {
+                eprint!("\rScanning: {done}/{total} ({flagged} flagged)");
+                let _ = std::io::stderr().flush();
+            }
+        },
+    )?;
+    if summary.total_assets > 1 {
+        eprintln!();
+    }
+    if only_flagged {
+        summary.assets.retain(|a| a.blocked || a.flag_count > 0);
+    }
+    if jsonl {
+        return Ok(summary.blocked_assets > 0);
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
         println!(
             "{} assets, {} blocked, {} flags",
             summary.total_assets, summary.blocked_assets, summary.total_flags
@@ -192,9 +230,19 @@ fn run() -> Result<bool> {
             fast,
             only_flagged,
             json,
+            jsonl,
             profile,
             threshold,
-        } => scan(paths, no_models, fast, only_flagged, json, profile, threshold),
+        } => scan(
+            paths,
+            no_models,
+            fast,
+            only_flagged,
+            json,
+            jsonl,
+            profile,
+            threshold,
+        ),
         Command::Scrub {
             input,
             output,

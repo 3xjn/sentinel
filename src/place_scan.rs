@@ -95,6 +95,19 @@ pub fn scan(path: &Path, policy: &Policy) -> Result<ScanSummary> {
 }
 /// Scan multiple roots, deduplicating overlapping paths in deterministic order.
 pub fn scan_paths(roots: &[PathBuf], policy: &Policy, options: ScanOptions) -> Result<ScanSummary> {
+    scan_paths_with_progress(roots, policy, options, |_, _, _| {})
+}
+
+/// Scan multiple roots, invoking `on_progress(done, total, &report)` as each file finishes.
+pub fn scan_paths_with_progress<F>(
+    roots: &[PathBuf],
+    policy: &Policy,
+    options: ScanOptions,
+    on_progress: F,
+) -> Result<ScanSummary>
+where
+    F: Fn(usize, usize, &AssetReport) + Sync,
+{
     anyhow::ensure!(!roots.is_empty(), "At least one scan path is required");
     let mut paths = BTreeSet::new();
     for path in roots {
@@ -125,10 +138,17 @@ pub fn scan_paths(roots: &[PathBuf], policy: &Policy, options: ScanOptions) -> R
         }
     }
     let ordered: Vec<PathBuf> = paths.into_iter().collect();
+    let total = ordered.len();
+    let done = std::sync::atomic::AtomicUsize::new(0);
     Ok(ScanSummary::new(
         ordered
             .par_iter()
-            .map(|p| scan_file_with_options(p, policy, options))
+            .map(|p| {
+                let report = scan_file_with_options(p, policy, options)?;
+                let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                on_progress(n, total, &report);
+                Ok(report)
+            })
             .collect::<Result<Vec<_>>>()?,
     ))
 }
