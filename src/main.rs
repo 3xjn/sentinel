@@ -29,6 +29,8 @@ enum Command {
         #[arg(long)]
         fast: bool,
         #[arg(long)]
+        only_flagged: bool,
+        #[arg(long)]
         json: bool,
         #[arg(long, value_enum, default_value = "high-recall")]
         profile: Profile,
@@ -105,6 +107,7 @@ fn scan(
     paths: Vec<PathBuf>,
     no_models: bool,
     fast: bool,
+    only_flagged: bool,
     json: bool,
     profile: Profile,
     thresholds: Vec<String>,
@@ -119,11 +122,14 @@ fn scan(
             score.parse()?,
         )?;
     }
-    let summary = place_scan::scan_paths(
+    let mut summary = place_scan::scan_paths(
         &paths,
         &policy,
         sentinel::models::ScanOptions { no_models, fast },
     )?;
+    if only_flagged {
+        summary.assets.retain(|a| a.blocked || a.flag_count > 0);
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
@@ -184,10 +190,11 @@ fn run() -> Result<bool> {
             paths,
             no_models,
             fast,
+            only_flagged,
             json,
             profile,
             threshold,
-        } => scan(paths, no_models, fast, json, profile, threshold),
+        } => scan(paths, no_models, fast, only_flagged, json, profile, threshold),
         Command::Scrub {
             input,
             output,

@@ -128,7 +128,7 @@ Model discovery checks `SENTINEL_MODEL_DIR`, then `%LOCALAPPDATA%\sentinel\model
 
 ```bash
 sentinel scan ./assets ./badge.png --json
-sentinel scan ./assets --fast --json
+sentinel scan ./assets --fast --only-flagged --json
 sentinel scan ./assets --no-models --json
 sentinel scan ./game --profile balanced --threshold offsite_link=0.25
 ```
@@ -137,6 +137,7 @@ sentinel scan ./game --profile balanced --threshold offsite_link=0.25
 - **Profiles:** `high-recall` (default) favors human review; `balanced` raises all thresholds by `0.20`.
 - **Categories:** `offsite_link`, `gore_violence`, `sexual_nudity`, `profanity_slurs`, `regulated_goods`, `unfiltered_text_input`.
 - **Fast mode:** `--fast` skips multi-scale opaque-image tiling and evaluates full frames only (~0.15s/image warm) for large directory or drive-wide sweeps.
+- **Flagged-only output:** `--only-flagged` omits clean files from `--json` output while keeping `total_assets`, `blocked_assets`, and `total_flags` totals.
 - **Lightweight mode:** `--no-models` skips OCR, ONNX classifiers, and CLIP while still running QR decoding, PNG metadata, text rules, and visual heuristics.
 - **Exit codes:** `0` clean, `1` review flags or verification violations, `2` input or processing error.
 
